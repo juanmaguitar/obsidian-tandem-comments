@@ -1,4 +1,4 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
 import { formatComment, formatTs } from "./export";
 import type CommentsPlugin from "./main";
@@ -389,7 +389,6 @@ export class CommentSidebar extends ItemView {
       );
       meta.createSpan({ text: formatTs(entry.ts), cls: "tc-ts" });
       const textEl = row.createDiv({
-        text: entry.text,
         cls: "tc-text tc-text-editable",
         attr: {
           tabindex: "0",
@@ -397,6 +396,9 @@ export class CommentSidebar extends ItemView {
           "aria-label": `Comment by ${entry.author}. Double-click or press Enter to edit.`,
         },
       });
+      // Use Obsidian's renderer and inherit its Markdown, sanitization, and
+      // registered post-processor behavior.
+      void MarkdownRenderer.render(this.app, entry.text, textEl, file.path, this);
       const beginEdit = (): void => {
         const expected = { ...entry };
         const input = row.createEl("textarea", {
@@ -459,10 +461,12 @@ export class CommentSidebar extends ItemView {
         input.setSelectionRange(input.value.length, input.value.length);
       };
       textEl.ondblclick = (e) => {
+        if (e.target instanceof Element && e.target.closest("a")) return;
         e.preventDefault();
         beginEdit();
       };
       textEl.onkeydown = (e) => {
+        if (e.target !== textEl) return;
         if (e.key === "Enter" || e.key === "F2") {
           e.preventDefault();
           beginEdit();

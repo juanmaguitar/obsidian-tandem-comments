@@ -84,7 +84,19 @@
 }
 
 .tc-text {
-  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tc-text p {
+  margin: 0.7em 0;
+}
+
+.tc-text > :first-child {
+  margin-top: 0;
+}
+
+.tc-text > :last-child {
+  margin-bottom: 0;
 }
 
 .tc-text-editable {
