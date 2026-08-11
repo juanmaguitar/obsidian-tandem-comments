@@ -220,6 +220,21 @@ export function setStatus(comments: CommentMap, id: string, status: CommentStatu
   c.status = status;
 }
 
+export function removeThreadEntry(comments: CommentMap, id: string, index: number): void {
+  const comment = comments[id];
+  if (!comment) throw new Error(`tandem-comments: unknown comment id "${id}"`);
+  if (!comment.thread[index]) {
+    throw new Error(`tandem-comments: thread entry ${index} out of range for comment "${id}"`);
+  }
+  // A plain comment's first entry is its root, so deleting it removes the whole
+  // thread. A suggestion's first entry is only its optional explanation.
+  if (index === 0 && !comment.suggestion) {
+    delete comments[id];
+    return;
+  }
+  comment.thread.splice(index, 1);
+}
+
 export function removeComment(comments: CommentMap, id: string): void {
   delete comments[id];
 }

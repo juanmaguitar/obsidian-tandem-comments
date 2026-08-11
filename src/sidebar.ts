@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, TFile, WorkspaceLeaf } from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
 import { formatComment, formatTs } from "./export";
 import type CommentsPlugin from "./main";
@@ -10,6 +10,7 @@ import {
   editThreadEntry,
   generateId,
   removeComment,
+  removeThreadEntry,
   resolveAll,
   setStatus,
   type SuggestionFailureReason,
@@ -388,6 +389,32 @@ export class CommentSidebar extends ItemView {
         this.plugin.settings.authorColorOverrides
       );
       meta.createSpan({ text: formatTs(entry.ts), cls: "tc-ts" });
+      const entryMenuTrigger = meta.createEl("button", {
+        cls: "tc-entry-menu-trigger clickable-icon",
+        attr: {
+          "aria-label": `More options for comment by ${entry.author}`,
+          "aria-haspopup": "menu",
+          "aria-expanded": "false",
+        },
+      });
+      setIcon(entryMenuTrigger, "ellipsis");
+      entryMenuTrigger.onclick = () => {
+        const menu = new Menu();
+        menu.addItem((item) =>
+          item
+            .setTitle("Delete entry")
+            .setIcon("trash-2")
+            .setWarning(true)
+            .onClick(() =>
+              void this.plugin.updateDoc(file, (d) => removeThreadEntry(d.comments, r.id, entryIndex))
+            )
+        );
+        entryMenuTrigger.setAttr("aria-expanded", "true");
+        menu.onHide(() => entryMenuTrigger.setAttr("aria-expanded", "false"));
+        const rect = entryMenuTrigger.getBoundingClientRect();
+        menu.showAtPosition({ x: rect.right, y: rect.bottom, left: true }, entryMenuTrigger.ownerDocument);
+      };
+
       const textEl = row.createDiv({
         cls: "tc-text tc-text-editable",
         attr: {
@@ -521,8 +548,14 @@ export class CommentSidebar extends ItemView {
       void navigator.clipboard
         .writeText(formatComment(r, { includeQuote: this.plugin.settings.copyIncludeQuote, formatTs }))
         .then(() => new Notice("Thread copied."));
-    const delBtn = actions.createEl("button", { text: "Delete" });
-    delBtn.onclick = () => void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id));
+    // A suggestion's thread entries are its explanation and replies, so it still
+    // needs a card-level action that discards the suggestion itself.
+    if (r.comment.suggestion || r.comment.thread.length === 0) {
+      const delBtn = actions.createEl("button", {
+        text: r.comment.suggestion ? "Delete suggestion" : "Delete",
+      });
+      delBtn.onclick = () => void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id));
+    }
 
     if (r.comment.status === "open") {
       const reply = card.createEl("textarea", {
