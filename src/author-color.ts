@@ -15,8 +15,19 @@ export interface AuthorColorHsl {
   l: number;
 }
 
+export interface AuthorColorReadability {
+  lightContrast: number;
+  darkContrast: number;
+  lowContrastThemes: AuthorColorTheme[];
+}
+
 const AUTHOR_COLOR_SATURATION = 55;
 const AUTHOR_COLOR_LIGHTNESS: Record<AuthorColorTheme, number> = { light: 28, dark: 72 };
+const STANDARD_THEME_BACKGROUNDS: Record<AuthorColorTheme, string> = {
+  light: "#ffffff",
+  dark: "#202020",
+};
+const MINIMUM_TEXT_CONTRAST = 4.5;
 
 function normalizeHue(hue: number): number {
   return Math.round(((hue % 360) + 360) % 360) % 360;
@@ -83,6 +94,44 @@ export function normalizeAuthorColorOverrides(value: unknown): Record<string, st
     }
   }
   return normalized;
+}
+
+function hexRgb(hex: string): [number, number, number] | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  return [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16) / 255) as [
+    number,
+    number,
+    number,
+  ];
+}
+
+function relativeLuminance(hex: string): number | null {
+  const rgb = hexRgb(hex);
+  if (!rgb) return null;
+  const [red, green, blue] = rgb.map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+export function colorContrast(foreground: string, background: string): number | null {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  if (foregroundLuminance === null || backgroundLuminance === null) return null;
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  );
+}
+
+export function authorColorReadability(color: string): AuthorColorReadability | null {
+  const lightContrast = colorContrast(color, STANDARD_THEME_BACKGROUNDS.light);
+  const darkContrast = colorContrast(color, STANDARD_THEME_BACKGROUNDS.dark);
+  if (lightContrast === null || darkContrast === null) return null;
+  const lowContrastThemes: AuthorColorTheme[] = [];
+  if (lightContrast < MINIMUM_TEXT_CONTRAST) lowContrastThemes.push("light");
+  if (darkContrast < MINIMUM_TEXT_CONTRAST) lowContrastThemes.push("dark");
+  return { lightContrast, darkContrast, lowContrastThemes };
 }
 
 export function renameAuthorColorOverride(

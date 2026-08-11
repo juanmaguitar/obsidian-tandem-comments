@@ -1,7 +1,10 @@
 import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, TFile, WorkspaceLeaf } from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
+import { confirmAction } from "./confirm-action";
 import { formatComment, formatTs } from "./export";
 import type CommentsPlugin from "./main";
+import { shouldSubmitComment, sortSidebarComments } from "./sidebar-preferences";
+import { formatSidebarTimestamp } from "./timestamp";
 import {
   addComment,
   addReply,
@@ -30,10 +33,21 @@ function truncate(s: string, n: number): string {
 }
 
 /** Colors an author name span with accessible light and dark variants. */
-function paintAuthor(el: HTMLElement, author: string, overrides: AuthorColorOverrides): void {
+function paintAuthor(
+  el: HTMLElement,
+  author: string,
+  overrides: AuthorColorOverrides,
+  enabled: boolean
+): void {
+  el.dataset.tcAuthor = author;
+  if (!enabled) {
+    el.removeClass("tc-author-colored");
+    el.style.removeProperty("--tc-author-color-light");
+    el.style.removeProperty("--tc-author-color-dark");
+    return;
+  }
   el.style.setProperty("--tc-author-color-light", resolveAuthorColor(author, overrides, "light"));
   el.style.setProperty("--tc-author-color-dark", resolveAuthorColor(author, overrides, "dark"));
-  el.dataset.tcAuthor = author;
   el.addClass("tc-author-colored");
 }
 
@@ -89,6 +103,11 @@ export class CommentSidebar extends ItemView {
         }
       })
     );
+    this.registerInterval(
+      window.setInterval(() => {
+        if (this.plugin.settings.timestampDisplay === "relative") this.refreshTimestamps();
+      }, 60_000)
+    );
     await this.render();
   }
 
@@ -112,10 +131,22 @@ export class CommentSidebar extends ItemView {
     void this.render();
   }
 
+  settingsChanged(resetResolved: boolean): void {
+    if (resetResolved) this.showResolved = this.plugin.settings.showResolvedByDefault;
+    void this.render();
+  }
+
   refreshAuthorColors(): void {
     for (const el of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".tc-author[data-tc-author]"))) {
       const author = el.dataset.tcAuthor;
-      if (author != null) paintAuthor(el, author, this.plugin.settings.authorColorOverrides);
+      if (author != null) {
+        paintAuthor(
+          el,
+          author,
+          this.plugin.settings.authorColorOverrides,
+          this.plugin.settings.colorAuthorNames
+        );
+      }
     }
   }
 
@@ -157,15 +188,13 @@ export class CommentSidebar extends ItemView {
     else this.draft = null;
 
     const all = resolveAll(doc.prose, doc.comments);
-    const open = all
-      .filter((r) => r.comment.status === "open" && r.resolution.kind === "resolved")
-      .sort(
-        (a, b) =>
-          (a.resolution.kind === "resolved" ? a.resolution.start : 0) -
-          (b.resolution.kind === "resolved" ? b.resolution.start : 0)
-      );
-    const orphans = all.filter((r) => r.comment.status === "open" && r.resolution.kind === "orphaned");
-    const done = all.filter((r) => r.comment.status === "resolved");
+    const open = this.sortComments(
+      all.filter((r) => r.comment.status === "open" && r.resolution.kind === "resolved")
+    );
+    const orphans = this.sortComments(
+      all.filter((r) => r.comment.status === "open" && r.resolution.kind === "orphaned")
+    );
+    const done = this.sortComments(all.filter((r) => r.comment.status === "resolved"));
 
     if (!open.length && !orphans.length && !(this.showResolved && done.length) && !this.draft) {
       container.createDiv({ text: "No comments or suggestions in this file.", cls: "tc-empty" });
@@ -195,14 +224,20 @@ export class CommentSidebar extends ItemView {
     }
     const input = card.createEl("textarea", {
       cls: "tc-input",
-      attr: { placeholder: "Comment… (Enter = save, Esc = cancel)", rows: "3" },
+      attr: {
+        placeholder:
+          this.plugin.settings.submitShortcut === "enter"
+            ? "Comment… (Enter = save, Esc = cancel)"
+            : "Comment… (Cmd/Ctrl+Enter = save, Esc = cancel)",
+        rows: "3",
+      },
     });
     window.setTimeout(() => input.focus(), 0);
     input.onkeydown = (e) => {
       if (e.key === "Escape") {
         this.draft = null;
         void this.render();
-      } else if (e.key === "Enter" && !e.shiftKey) {
+      } else if (this.shouldSubmit(e)) {
         e.preventDefault();
         const text = input.value.trim();
         if (!text) return;
@@ -283,7 +318,7 @@ export class CommentSidebar extends ItemView {
       if (e.key === "Escape") {
         this.draft = null;
         void this.render();
-      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      } else if (this.shouldSubmit(e)) {
         e.preventDefault();
         submit();
       }
@@ -292,7 +327,7 @@ export class CommentSidebar extends ItemView {
       if (e.key === "Escape") {
         this.draft = null;
         void this.render();
-      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      } else if (this.shouldSubmit(e)) {
         e.preventDefault();
         submit();
       }
@@ -337,17 +372,32 @@ export class CommentSidebar extends ItemView {
       });
       setIcon(resolveBtn, "check");
       setTooltip(resolveBtn, "Resolve");
-      resolveBtn.onclick = () =>
-        void this.plugin.updateDoc(file, (d) => {
-          if (this.plugin.settings.resolveBehavior === "remove") removeComment(d.comments, r.id);
-          else setStatus(d.comments, r.id, "resolved");
-        });
+      resolveBtn.onclick = () => {
+        void (async () => {
+          if (
+            this.plugin.settings.resolveBehavior === "remove" &&
+            this.plugin.settings.confirmDestructiveActions &&
+            !(await confirmAction(this.app, {
+              title: "Resolve comment?",
+              message: "This will permanently remove the comment thread from the note.",
+              confirmLabel: "Resolve",
+            }))
+          ) {
+            return;
+          }
+          await this.plugin.updateDoc(file, (d) => {
+            if (this.plugin.settings.resolveBehavior === "remove") removeComment(d.comments, r.id);
+            else setStatus(d.comments, r.id, "resolved");
+          });
+        })();
+      };
     };
     const addMenuTrigger = (
       controls: HTMLElement,
       ariaLabel: string,
       deleteTitle: string,
-      deleteAction: () => void
+      deleteMessage: string,
+      deleteAction: () => Promise<unknown>
     ): void => {
       const trigger = controls.createEl("button", {
         cls: "tc-entry-menu-trigger clickable-icon",
@@ -366,7 +416,21 @@ export class CommentSidebar extends ItemView {
               .setTitle(deleteTitle)
               .setIcon("trash-2")
               .setWarning(true)
-              .onClick(deleteAction)
+              .onClick(() => {
+                void (async () => {
+                  if (
+                    this.plugin.settings.confirmDestructiveActions &&
+                    !(await confirmAction(this.app, {
+                      title: `${deleteTitle}?`,
+                      message: deleteMessage,
+                      confirmLabel: deleteTitle,
+                    }))
+                  ) {
+                    return;
+                  }
+                  await deleteAction();
+                })();
+              })
           );
         });
     };
@@ -396,12 +460,17 @@ export class CommentSidebar extends ItemView {
       paintAuthor(
         meta.createSpan({ text: suggestion.author, cls: "tc-author" }),
         suggestion.author,
-        this.plugin.settings.authorColorOverrides
+        this.plugin.settings.authorColorOverrides,
+        this.plugin.settings.colorAuthorNames
       );
-      meta.createSpan({ text: formatTs(suggestion.ts), cls: "tc-ts" });
+      this.addTimestamp(meta, suggestion.ts);
       const suggestionControls = meta.createDiv({ cls: "tc-entry-controls" });
-      addMenuTrigger(suggestionControls, "More options for suggestion", "Delete Suggestion", () =>
-        void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
+      addMenuTrigger(
+        suggestionControls,
+        "More options for suggestion",
+        "Delete Suggestion",
+        "This will permanently remove the suggestion and its discussion from the note.",
+        () => this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
       );
       const change = card.createDiv({ cls: "tc-suggestion-change" });
       const original = change.createDiv({ text: r.comment.anchor.exact, cls: "tc-suggestion-original" });
@@ -444,8 +513,12 @@ export class CommentSidebar extends ItemView {
         const fallbackMeta = card.createDiv({ cls: "tc-meta" });
         const fallbackControls = fallbackMeta.createDiv({ cls: "tc-entry-controls" });
         if (r.comment.status === "open") addResolveButton(fallbackControls);
-        addMenuTrigger(fallbackControls, "More options for comment", "Delete Comment", () =>
-          void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
+        addMenuTrigger(
+          fallbackControls,
+          "More options for comment",
+          "Delete Comment",
+          "This will permanently remove the comment thread from the note.",
+          () => this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
         );
       }
     }
@@ -456,9 +529,10 @@ export class CommentSidebar extends ItemView {
       paintAuthor(
         meta.createSpan({ text: entry.author, cls: "tc-author" }),
         entry.author,
-        this.plugin.settings.authorColorOverrides
+        this.plugin.settings.authorColorOverrides,
+        this.plugin.settings.colorAuthorNames
       );
-      meta.createSpan({ text: formatTs(entry.ts), cls: "tc-ts" });
+      this.addTimestamp(meta, entry.ts);
       const entryControls = meta.createDiv({ cls: "tc-entry-controls" });
       if (entryIndex === 0 && r.comment.status === "open" && !r.comment.suggestion) {
         addResolveButton(entryControls);
@@ -467,7 +541,10 @@ export class CommentSidebar extends ItemView {
         entryControls,
         `More options for comment by ${entry.author}`,
         "Delete Comment",
-        () => void this.plugin.updateDoc(file, (d) => removeThreadEntry(d.comments, r.id, entryIndex))
+        entryIndex === 0
+          ? "This will permanently remove the comment thread from the note."
+          : "This will permanently remove this reply from the comment thread.",
+        () => this.plugin.updateDoc(file, (d) => removeThreadEntry(d.comments, r.id, entryIndex))
       );
 
       const textEl = row.createDiv({
@@ -534,7 +611,7 @@ export class CommentSidebar extends ItemView {
           if (e.key === "Escape") {
             e.preventDefault();
             void this.render();
-          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          } else if (this.shouldSubmit(e)) {
             e.preventDefault();
             submit();
           }
@@ -574,11 +651,25 @@ export class CommentSidebar extends ItemView {
         card.remove();
       };
       const declineBtn = actions.createEl("button", { text: "Decline" });
-      declineBtn.onclick = () =>
-        void this.plugin.updateDoc(file, (d) => {
-          const result = declineSuggestion(d.comments, r.id, this.plugin.settings.resolveBehavior);
-          if (!result.ok) new Notice(suggestionFailureMessage(result.reason));
-        });
+      declineBtn.onclick = () => {
+        void (async () => {
+          if (
+            this.plugin.settings.resolveBehavior === "remove" &&
+            this.plugin.settings.confirmDestructiveActions &&
+            !(await confirmAction(this.app, {
+              title: "Decline suggestion?",
+              message: "This will permanently remove the suggestion and its discussion from the note.",
+              confirmLabel: "Decline",
+            }))
+          ) {
+            return;
+          }
+          await this.plugin.updateDoc(file, (d) => {
+            const result = declineSuggestion(d.comments, r.id, this.plugin.settings.resolveBehavior);
+            if (!result.ok) new Notice(suggestionFailureMessage(result.reason));
+          });
+        })();
+      };
     } else if (r.comment.status === "resolved" && !r.comment.suggestion) {
       const reopenBtn = actions.createEl("button", { text: "Reopen" });
       reopenBtn.onclick = () => void this.plugin.updateDoc(file, (d) => setStatus(d.comments, r.id, "open"));
@@ -595,10 +686,16 @@ export class CommentSidebar extends ItemView {
     if (r.comment.status === "open") {
       const reply = card.createEl("textarea", {
         cls: "tc-input",
-        attr: { placeholder: "Reply… (Enter = send)", rows: "2" },
+        attr: {
+          placeholder:
+            this.plugin.settings.submitShortcut === "enter"
+              ? "Reply… (Enter = send)"
+              : "Reply… (Cmd/Ctrl+Enter = send)",
+          rows: "2",
+        },
       });
       reply.onkeydown = (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
+        if (this.shouldSubmit(e)) {
           e.preventDefault();
           const text = reply.value.trim();
           if (!text) return;
@@ -609,6 +706,35 @@ export class CommentSidebar extends ItemView {
         }
       };
     }
+  }
+
+  private shouldSubmit(event: KeyboardEvent): boolean {
+    return shouldSubmitComment(event, this.plugin.settings.submitShortcut);
+  }
+
+  private addTimestamp(container: HTMLElement, timestamp: string): void {
+    const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
+    if (formatted === null) return;
+    const element = container.createSpan({ text: formatted, cls: "tc-ts" });
+    element.dataset.tcTimestamp = timestamp;
+    if (this.plugin.settings.timestampDisplay !== "full") {
+      setTooltip(element, formatTs(timestamp));
+    }
+  }
+
+  private refreshTimestamps(): void {
+    for (const element of Array.from(
+      this.contentEl.querySelectorAll<HTMLElement>(".tc-ts[data-tc-timestamp]")
+    )) {
+      const timestamp = element.dataset.tcTimestamp;
+      if (!timestamp) continue;
+      const formatted = formatSidebarTimestamp(timestamp, this.plugin.settings.timestampDisplay);
+      if (formatted !== null) element.setText(formatted);
+    }
+  }
+
+  private sortComments(items: ResolvedComment[]): ResolvedComment[] {
+    return sortSidebarComments(items, this.plugin.settings.sidebarSortOrder);
   }
 
   private reanchorFromSelection(file: TFile, id: string): void {

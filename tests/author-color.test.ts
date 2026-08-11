@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   authorColorCss,
   authorColorHsl,
+  authorColorReadability,
   authorHue,
+  colorContrast,
   normalizeAuthorColorOverrides,
   renameAuthorColorOverride,
   resolveAuthorColor,
@@ -77,6 +79,13 @@ describe("authorHue", () => {
   it("provides the actual theme shade for color-picker previews", () => {
     expect(authorColorHsl(101, "light")).toEqual({ h: 101, s: 55, l: 28 });
     expect(authorColorHsl(101, "dark")).toEqual({ h: 101, s: 55, l: 72 });
+  });
+
+  it("reports custom-color contrast against standard light and dark backgrounds", () => {
+    expect(colorContrast("#000000", "#ffffff")).toBeCloseTo(21);
+    expect(colorContrast("invalid", "#ffffff")).toBeNull();
+    expect(authorColorReadability("#000000")?.lowContrastThemes).toEqual(["dark"]);
+    expect(authorColorReadability("#ffffff")?.lowContrastThemes).toEqual(["light"]);
   });
 
   it("renames an override without changing its hue or other authors", () => {

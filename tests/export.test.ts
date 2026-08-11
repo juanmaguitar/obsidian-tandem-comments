@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildExportNote, formatComment, renderExportFileName } from "../src/export";
+import {
+  buildExportNote,
+  formatComment,
+  renderExportFileName,
+  resolveExportDirectory,
+} from "../src/export";
 import type { ResolvedComment } from "../src/types";
 
 function rc(over: Partial<ResolvedComment["comment"]> & { id?: string; start?: number; orphaned?: boolean }): ResolvedComment {
@@ -128,6 +133,14 @@ describe("renderExportFileName", () => {
 
   it("falls back to a default when the template renders empty", () => {
     expect(renderExportFileName("   ", "Draft", "2026-06-12")).toBe("Draft – Comments");
+  });
+});
+
+describe("resolveExportDirectory", () => {
+  it("uses the source folder or the selected vault folder", () => {
+    expect(resolveExportDirectory("Projects/Draft", "source", "Reviews")).toBe("Projects/Draft");
+    expect(resolveExportDirectory("Projects/Draft", "folder", "Reviews")).toBe("Reviews");
+    expect(resolveExportDirectory("/", "source", "Reviews")).toBe("");
   });
 });
 
