@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, TFile, WorkspaceLeaf } from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
 import { formatComment, formatTs } from "./export";
 import type CommentsPlugin from "./main";
@@ -312,6 +312,64 @@ export class CommentSidebar extends ItemView {
     if (r.comment.suggestion) cls.push("tc-suggestion-card");
     if (r.resolution.kind === "resolved" && r.resolution.ambiguous) cls.push("tc-ambiguous");
     const card = container.createDiv({ cls: cls.join(" ") });
+    const copyThread = (): void => {
+      void navigator.clipboard
+        .writeText(formatComment(r, { includeQuote: this.plugin.settings.copyIncludeQuote, formatTs }))
+        .then(() => new Notice("Thread copied."));
+    };
+    const showMenu = (trigger: HTMLElement, build: (menu: Menu) => void): void => {
+      const menu = new Menu();
+      build(menu);
+      trigger.setAttr("aria-expanded", "true");
+      menu.onHide(() => trigger.setAttr("aria-expanded", "false"));
+      const rect = trigger.getBoundingClientRect();
+      menu.showAtPosition({ x: rect.right, y: rect.bottom, left: true }, trigger.ownerDocument);
+    };
+    const addCopyMenuItem = (menu: Menu): void => {
+      menu.addItem((item) => item.setTitle("Copy").setIcon("copy").onClick(copyThread));
+    };
+    const addResolveButton = (controls: HTMLElement): void => {
+      const resolveBtn = controls.createEl("button", {
+        cls: "tc-entry-action clickable-icon",
+        attr: {
+          "aria-label": "Resolve comment",
+        },
+      });
+      setIcon(resolveBtn, "check");
+      setTooltip(resolveBtn, "Resolve");
+      resolveBtn.onclick = () =>
+        void this.plugin.updateDoc(file, (d) => {
+          if (this.plugin.settings.resolveBehavior === "remove") removeComment(d.comments, r.id);
+          else setStatus(d.comments, r.id, "resolved");
+        });
+    };
+    const addMenuTrigger = (
+      controls: HTMLElement,
+      ariaLabel: string,
+      deleteTitle: string,
+      deleteAction: () => void
+    ): void => {
+      const trigger = controls.createEl("button", {
+        cls: "tc-entry-menu-trigger clickable-icon",
+        attr: {
+          "aria-label": ariaLabel,
+          "aria-haspopup": "menu",
+          "aria-expanded": "false",
+        },
+      });
+      setIcon(trigger, "ellipsis");
+      trigger.onclick = () =>
+        showMenu(trigger, (menu) => {
+          addCopyMenuItem(menu);
+          menu.addItem((item) =>
+            item
+              .setTitle(deleteTitle)
+              .setIcon("trash-2")
+              .setWarning(true)
+              .onClick(deleteAction)
+          );
+        });
+    };
     if (r.id === this.focusedId) {
       card.addClass("tc-focused");
       window.setTimeout(() => card.scrollIntoView({ block: "nearest" }), 0);
@@ -341,6 +399,10 @@ export class CommentSidebar extends ItemView {
         this.plugin.settings.authorColorOverrides
       );
       meta.createSpan({ text: formatTs(suggestion.ts), cls: "tc-ts" });
+      const suggestionControls = meta.createDiv({ cls: "tc-entry-controls" });
+      addMenuTrigger(suggestionControls, "More options for suggestion", "Delete Suggestion", () =>
+        void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
+      );
       const change = card.createDiv({ cls: "tc-suggestion-change" });
       const original = change.createDiv({ text: r.comment.anchor.exact, cls: "tc-suggestion-original" });
       if (r.resolution.kind === "resolved") {
@@ -378,6 +440,14 @@ export class CommentSidebar extends ItemView {
         quote.addClass("tc-quote-link");
         quote.onclick = () => this.plugin.revealAnchor(file, r.comment.anchor);
       }
+      if (r.comment.thread.length === 0) {
+        const fallbackMeta = card.createDiv({ cls: "tc-meta" });
+        const fallbackControls = fallbackMeta.createDiv({ cls: "tc-entry-controls" });
+        if (r.comment.status === "open") addResolveButton(fallbackControls);
+        addMenuTrigger(fallbackControls, "More options for comment", "Delete Comment", () =>
+          void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id))
+        );
+      }
     }
 
     for (const [entryIndex, entry] of r.comment.thread.entries()) {
@@ -389,31 +459,16 @@ export class CommentSidebar extends ItemView {
         this.plugin.settings.authorColorOverrides
       );
       meta.createSpan({ text: formatTs(entry.ts), cls: "tc-ts" });
-      const entryMenuTrigger = meta.createEl("button", {
-        cls: "tc-entry-menu-trigger clickable-icon",
-        attr: {
-          "aria-label": `More options for comment by ${entry.author}`,
-          "aria-haspopup": "menu",
-          "aria-expanded": "false",
-        },
-      });
-      setIcon(entryMenuTrigger, "ellipsis");
-      entryMenuTrigger.onclick = () => {
-        const menu = new Menu();
-        menu.addItem((item) =>
-          item
-            .setTitle("Delete entry")
-            .setIcon("trash-2")
-            .setWarning(true)
-            .onClick(() =>
-              void this.plugin.updateDoc(file, (d) => removeThreadEntry(d.comments, r.id, entryIndex))
-            )
-        );
-        entryMenuTrigger.setAttr("aria-expanded", "true");
-        menu.onHide(() => entryMenuTrigger.setAttr("aria-expanded", "false"));
-        const rect = entryMenuTrigger.getBoundingClientRect();
-        menu.showAtPosition({ x: rect.right, y: rect.bottom, left: true }, entryMenuTrigger.ownerDocument);
-      };
+      const entryControls = meta.createDiv({ cls: "tc-entry-controls" });
+      if (entryIndex === 0 && r.comment.status === "open" && !r.comment.suggestion) {
+        addResolveButton(entryControls);
+      }
+      addMenuTrigger(
+        entryControls,
+        `More options for comment by ${entry.author}`,
+        "Delete Comment",
+        () => void this.plugin.updateDoc(file, (d) => removeThreadEntry(d.comments, r.id, entryIndex))
+      );
 
       const textEl = row.createDiv({
         cls: "tc-text tc-text-editable",
@@ -524,14 +579,7 @@ export class CommentSidebar extends ItemView {
           const result = declineSuggestion(d.comments, r.id, this.plugin.settings.resolveBehavior);
           if (!result.ok) new Notice(suggestionFailureMessage(result.reason));
         });
-    } else if (r.comment.status === "open" && !r.comment.suggestion) {
-      const resolveBtn = actions.createEl("button", { text: "Resolve" });
-      resolveBtn.onclick = () =>
-        void this.plugin.updateDoc(file, (d) => {
-          if (this.plugin.settings.resolveBehavior === "remove") removeComment(d.comments, r.id);
-          else setStatus(d.comments, r.id, "resolved");
-        });
-    } else if (!r.comment.suggestion) {
+    } else if (r.comment.status === "resolved" && !r.comment.suggestion) {
       const reopenBtn = actions.createEl("button", { text: "Reopen" });
       reopenBtn.onclick = () => void this.plugin.updateDoc(file, (d) => setStatus(d.comments, r.id, "open"));
     }
@@ -543,20 +591,7 @@ export class CommentSidebar extends ItemView {
       const reBtn = actions.createEl("button", { text: "Re-anchor to selection" });
       reBtn.onclick = () => this.reanchorFromSelection(file, r.id);
     }
-    const copyBtn = actions.createEl("button", { text: "Copy" });
-    copyBtn.onclick = () =>
-      void navigator.clipboard
-        .writeText(formatComment(r, { includeQuote: this.plugin.settings.copyIncludeQuote, formatTs }))
-        .then(() => new Notice("Thread copied."));
-    // A suggestion's thread entries are its explanation and replies, so it still
-    // needs a card-level action that discards the suggestion itself.
-    if (r.comment.suggestion || r.comment.thread.length === 0) {
-      const delBtn = actions.createEl("button", {
-        text: r.comment.suggestion ? "Delete suggestion" : "Delete",
-      });
-      delBtn.onclick = () => void this.plugin.updateDoc(file, (d) => removeComment(d.comments, r.id));
-    }
-
+    if (!actions.hasChildNodes()) actions.remove();
     if (r.comment.status === "open") {
       const reply = card.createEl("textarea", {
         cls: "tc-input",
