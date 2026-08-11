@@ -52,6 +52,15 @@ export function renderExportFileName(template: string, filename: string, date: s
   return rendered || `${filename.replace(INVALID_FILENAME_CHARS, "-")} – Comments`;
 }
 
+export function resolveExportDirectory(
+  sourceParentPath: string | null,
+  destination: "source" | "folder",
+  selectedFolder: string
+): string {
+  if (destination === "folder") return selectedFolder;
+  return sourceParentPath && sourceParentPath !== "/" ? sourceParentPath : "";
+}
+
 interface ExportOptions {
   scope: ExportScope;
   date: string;

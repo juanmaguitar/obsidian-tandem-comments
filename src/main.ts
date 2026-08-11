@@ -1,10 +1,27 @@
 import { Editor, MarkdownView, Notice, normalizePath, Plugin, TFile } from "obsidian";
-import { AUTHOR_OVERRIDE_KEY, detectOsUsername, FALLBACK_AUTHOR, resolveAuthorName } from "./author";
-import { normalizeAuthorColorOverrides } from "./author-color";
+import {
+  AUTHOR_OVERRIDE_KEY,
+  detectOsUsername,
+  FALLBACK_AUTHOR,
+  LEGACY_AUTHOR_OVERRIDE_KEY,
+  resolveAuthorName,
+} from "./author";
+import { confirmAction } from "./confirm-action";
 import { buildEditorExtension } from "./editor-extension";
-import { buildExportNote, formatTs, renderExportFileName } from "./export";
+import {
+  buildExportNote,
+  formatTs,
+  renderExportFileName,
+  resolveExportDirectory,
+} from "./export";
 import { registerReadingView } from "./reading-view";
-import { CommentsSettingTab, CommentsSettings, DEFAULT_SETTINGS } from "./settings";
+import { CommentsSettingTab } from "./settings";
+import {
+  type CommentsSettings,
+  DEFAULT_SETTINGS,
+  parseCommentsSettings,
+  settingsEffects,
+} from "./settings-model";
 import { CommentSidebar, VIEW_TYPE_COMMENTS } from "./sidebar";
 import { commitSuggestionAcceptance } from "./suggestion-editor";
 import {
@@ -21,10 +38,12 @@ import type { Anchor, ParsedDoc } from "./types";
 export default class CommentsPlugin extends Plugin {
   settings: CommentsSettings = DEFAULT_SETTINGS;
   private applyingSuggestion = false;
+  private settingsWriteQueue: Promise<void> = Promise.resolve();
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    this.applyHighlightColor();
+    this.applyHighlightAppearance();
+    this.applyReadingViewPreference();
 
     this.registerView(VIEW_TYPE_COMMENTS, (leaf) => new CommentSidebar(leaf, this));
     this.registerEditorExtension(buildEditorExtension(this));
@@ -59,20 +78,7 @@ export default class CommentsPlugin extends Plugin {
       id: "purge-resolved",
       name: "Remove resolved threads from file",
       icon: "trash-2",
-      callback: () => {
-        const file = this.app.workspace.getActiveFile();
-        if (!file || file.extension !== "md") return;
-        void this.updateDoc(file, (d) => {
-          let n = 0;
-          for (const [id, c] of Object.entries(d.comments)) {
-            if (c.status === "resolved") {
-              delete d.comments[id];
-              n++;
-            }
-          }
-          new Notice(n > 0 ? `${n} resolved thread${n === 1 ? "" : "s"} removed.` : "No resolved threads in this file.");
-        });
-      },
+      callback: () => void this.removeResolvedThreads(),
     });
 
     this.addCommand({
@@ -109,7 +115,8 @@ export default class CommentsPlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("window-open", (win) => {
-        win.doc.body.style.setProperty("--tc-highlight-color", this.settings.highlightColor);
+        this.applyHighlightAppearanceTo(win.doc);
+        this.applyReadingViewPreferenceTo(win.doc);
       })
     );
   }
@@ -117,25 +124,67 @@ export default class CommentsPlugin extends Plugin {
   onunload(): void {
     for (const doc of this.allDocuments()) {
       doc.body.style.removeProperty("--tc-highlight-color");
+      doc.body.style.removeProperty("--tc-highlight-opacity");
+      doc.body.classList.remove("tc-hide-reading-indicator");
     }
   }
 
   async loadSettings(): Promise<void> {
-    const data = ((await this.loadData()) as (Partial<CommentsSettings> & { authorName?: string }) | null) ?? {};
-    const hadLegacy = "authorName" in data;
-    const rawAuthorColors: unknown = data.authorColorOverrides;
-    const normalizedAuthorColors = normalizeAuthorColorOverrides(rawAuthorColors);
-    const hadLegacyAuthorColors = JSON.stringify(rawAuthorColors ?? {}) !== JSON.stringify(normalizedAuthorColors);
-    this.migrateLegacyAuthorName(data);
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
-    this.settings.authorColorOverrides = normalizedAuthorColors;
-    // remove authorName from synced data if it was in there previously
-    if (hadLegacy || hadLegacyAuthorColors) await this.saveData(this.settings);
+    const parsed = parseCommentsSettings(await this.loadData());
+    this.migrateLegacyAuthorName(parsed.legacyAuthorName);
+    this.settings = parsed.settings;
+    if (parsed.changed) await this.saveData(this.settings);
   }
 
-  async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
-    this.applyHighlightColor();
+  async updateSettings(patch: Partial<CommentsSettings>): Promise<void> {
+    const previous = this.settings;
+    const next = parseCommentsSettings({ ...previous, ...patch }).settings;
+    this.settings = next;
+    const write = this.settingsWriteQueue
+      .catch(() => undefined)
+      .then(() => this.saveData(next));
+    this.settingsWriteQueue = write;
+    await write;
+    const effects = settingsEffects(previous, next);
+    if (effects.refreshHighlights) this.applyHighlightAppearance();
+    if (effects.refreshAuthorColors) this.refreshAuthorColors();
+    if (effects.refreshReadingViewIndicator) this.applyReadingViewPreference();
+    if (effects.refreshSidebar) {
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_COMMENTS)) {
+        if (leaf.view instanceof CommentSidebar) {
+          leaf.view.settingsChanged(effects.resetResolvedVisibility);
+        }
+      }
+    }
+  }
+
+  private async removeResolvedThreads(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "md") return;
+    if (
+      this.settings.confirmDestructiveActions &&
+      !(await confirmAction(this.app, {
+        title: "Remove resolved threads?",
+        message: "This will permanently remove every resolved review thread from the active note.",
+        confirmLabel: "Remove threads",
+      }))
+    ) {
+      return;
+    }
+    await this.updateDoc(file, (doc) => {
+      let count = 0;
+      for (const [id, comment] of Object.entries(doc.comments)) {
+        if (comment.status === "resolved") {
+          delete doc.comments[id];
+          count++;
+        }
+      }
+      new Notice(
+        count > 0
+          ? `${count} resolved thread${count === 1 ? "" : "s"} removed.`
+          : "No resolved threads in this file."
+      );
+    });
   }
 
   /**
@@ -169,12 +218,17 @@ export default class CommentsPlugin extends Plugin {
    * it as this device's local override (unless one already exists) and drop it
    * from the settings object so it stops being synced.
    */
-  private migrateLegacyAuthorName(data: { authorName?: string }): void {
-    const legacy = data.authorName?.trim();
-    if (legacy && legacy !== FALLBACK_AUTHOR && !this.authorOverride()) {
-      this.setAuthorOverride(legacy);
+  private migrateLegacyAuthorName(syncedAuthorName?: string): void {
+    const current = this.app.loadLocalStorage(AUTHOR_OVERRIDE_KEY);
+    const oldLocal = this.app.loadLocalStorage(LEGACY_AUTHOR_OVERRIDE_KEY);
+    const legacy =
+      typeof oldLocal === "string" && oldLocal.trim()
+        ? oldLocal.trim()
+        : syncedAuthorName?.trim();
+    if (typeof current !== "string" && legacy && legacy !== FALLBACK_AUTHOR) {
+      this.app.saveLocalStorage(AUTHOR_OVERRIDE_KEY, legacy);
     }
-    delete data.authorName;
+    if (oldLocal !== null) this.app.saveLocalStorage(LEGACY_AUTHOR_OVERRIDE_KEY, null);
   }
 
   /** Haupt-Fenster + alle Popout-Fenster. */
@@ -184,10 +238,26 @@ export default class CommentsPlugin extends Plugin {
     return docs;
   }
 
-  applyHighlightColor(): void {
+  applyHighlightAppearance(): void {
     for (const doc of this.allDocuments()) {
-      doc.body.style.setProperty("--tc-highlight-color", this.settings.highlightColor);
+      this.applyHighlightAppearanceTo(doc);
     }
+  }
+
+  private applyHighlightAppearanceTo(doc: Document): void {
+    doc.body.style.setProperty("--tc-highlight-color", this.settings.highlightColor);
+    doc.body.style.setProperty("--tc-highlight-opacity", `${this.settings.highlightOpacity}%`);
+  }
+
+  private applyReadingViewPreference(): void {
+    for (const doc of this.allDocuments()) this.applyReadingViewPreferenceTo(doc);
+  }
+
+  private applyReadingViewPreferenceTo(doc: Document): void {
+    doc.body.classList.toggle(
+      "tc-hide-reading-indicator",
+      !this.settings.showReadingViewIndicator
+    );
   }
 
   nowTs(): string {
@@ -212,7 +282,7 @@ export default class CommentsPlugin extends Plugin {
     return true;
   }
 
-  /** Exportiert alle Kommentare der Datei als Notiz neben der Quelldatei (überschreibt bei erneutem Export). */
+  /** Exportiert alle Kommentare der Datei als Notiz und überschreibt sie bei erneutem Export. */
   async exportComments(file: TFile): Promise<void> {
     const doc = await this.readDoc(file);
     if (doc.error) {
@@ -231,8 +301,19 @@ export default class CommentsPlugin extends Plugin {
       return;
     }
     const name = renderExportFileName(this.settings.exportNameTemplate, file.basename, date);
-    const folder = file.parent && file.parent.path !== "/" ? file.parent.path + "/" : "";
-    const path = normalizePath(folder + name + ".md");
+    const folder = resolveExportDirectory(
+      file.parent?.path ?? null,
+      this.settings.exportDestination,
+      this.settings.exportFolder
+    );
+    const targetFolder = folder
+      ? this.app.vault.getFolderByPath(normalizePath(folder))
+      : this.app.vault.getRoot();
+    if (!targetFolder) {
+      new Notice("The selected export folder no longer exists. Choose another folder in settings.");
+      return;
+    }
+    const path = normalizePath((folder ? folder + "/" : "") + name + ".md");
     if (path === file.path) {
       new Notice("Export name matches the source file — change the template in settings.");
       return;

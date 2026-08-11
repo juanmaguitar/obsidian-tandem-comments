@@ -1,7 +1,11 @@
 /* Tandem Comments */
 
 .tc-highlight {
-  background-color: color-mix(in srgb, var(--tc-highlight-color, #ffd54a) 30%, transparent);
+  background-color: color-mix(
+    in srgb,
+    var(--tc-highlight-color, #ffd54a) var(--tc-highlight-opacity, 30%),
+    transparent
+  );
   border-bottom: 2px solid var(--tc-highlight-color, #ffd54a);
   cursor: pointer;
 }
@@ -294,8 +298,53 @@
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+}
+
+.tc-setting-preview {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.tc-setting-warning,
+.tc-setting-success {
+  margin-top: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+.tc-setting-warning {
+  color: var(--text-warning);
+}
+
+.tc-setting-success {
+  color: var(--text-success);
+}
+
+.tc-color-readability {
+  margin-top: 6px;
+}
+
+.tc-color-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tc-color-preview {
+  min-width: 74px;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.tc-color-preview-light {
+  background: #ffffff;
+}
+
+.tc-color-preview-dark {
+  background: #202020;
 }
 
 .tc-author-color-row .setting-item-info {
@@ -327,6 +376,10 @@
 
 .tc-pill-error {
   color: var(--text-error);
+}
+
+.tc-hide-reading-indicator .tc-pill:not(.tc-pill-error) {
+  display: none;
 }
 
 /* Live Preview: tandem-comments-Block-Widget vollständig ausblenden. */

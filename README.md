@@ -8,13 +8,13 @@ Quote-anchored comments and edit suggestions for [Obsidian](https://obsidian.md)
 
 - **Comment on any selection** — via command palette, hotkey, or right-click menu
 - **Suggest edits** — propose a replacement for selected text, then accept or decline it from the sidebar
-- **Sidebar threads:** reply, edit, resolve, reopen, delete, and re-anchor orphaned comments
-- **Per-author colors:** distinguish participants automatically, with optional exact color overrides in settings
+- **Sidebar threads:** reply, edit, resolve, reopen, delete, and re-anchor orphaned comments, with configurable sorting, timestamps, and submission shortcuts
+- **Per-author colors:** distinguish participants automatically, with optional exact color overrides, light and dark previews, and contrast warnings
 - **Live highlights** in the editor; click a highlight to jump to its thread
 - **Live re-anchoring** — comments follow your text as you edit; if an anchor's text disappears, the comment becomes *orphaned* and can be re-attached to a new selection
 - **Resolve = remove** by default, keeping files clean (history mode available in settings)
-- **Copy & export** — copy any comment as Markdown (with or without its quote), or export all of a file's comments to a companion note; name template and scope are configurable in settings
-- **Reading view pill** — the comment block renders as a compact "💬 N threads" pill
+- **Copy & export** — copy any comment as Markdown (with or without its quote), or export all of a file's comments to a companion note; name template, scope, and destination are configurable in settings
+- **Reading view pill** — the comment block renders as a compact "💬 N threads" pill that can be hidden in settings
 - **AI-ready by design** — the block is plain, self-describing JSON; the settings tab exports a skill file that teaches Claude Code the format
 
 ## Installation
@@ -111,7 +111,7 @@ Claude proposes replacements for those two passages and explains each change in
 its thread. The prose stays byte-for-byte identical until you review the
 suggestions in Obsidian and accept the ones you want.
 
-For Claude Code, **Settings → Export Claude skill** writes a ready-made skill to `~/.claude/skills/obsidian-tandem-comments/` that teaches it the format and conventions.
+For Claude Code, open **Settings → Tandem Comments → Advanced & integrations** and use **Export skill**. This writes a ready-made skill to `~/.claude/skills/obsidian-tandem-comments/` that teaches it the format and conventions.
 
 ## Why a block at the end of the file?
 
