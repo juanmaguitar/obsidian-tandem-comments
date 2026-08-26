@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, Keymap, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, TFile, WorkspaceLeaf } from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
 import { confirmAction } from "./confirm-action";
 import { formatComment, formatTs } from "./export";
@@ -558,6 +558,7 @@ export class CommentSidebar extends ItemView {
       // Use Obsidian's renderer and inherit its Markdown, sanitization, and
       // registered post-processor behavior.
       void MarkdownRenderer.render(this.app, entry.text, textEl, file.path, this);
+      this.wireCommentLinks(textEl, file);
       const beginEdit = (): void => {
         const expected = { ...entry };
         const input = row.createEl("textarea", {
@@ -710,6 +711,40 @@ export class CommentSidebar extends ItemView {
 
   private shouldSubmit(event: KeyboardEvent): boolean {
     return shouldSubmitComment(event, this.plugin.settings.submitShortcut);
+  }
+
+  /**
+   * MarkdownRenderer.render() produces link elements, but outside a Markdown
+   * view they are inert: internal links navigate only if the host view calls
+   * openLinkText() itself, and hover previews only appear if the view fires
+   * the hover-link event. Wire both up for links inside comment text.
+   */
+  private wireCommentLinks(textEl: HTMLElement, file: TFile): void {
+    const findInternalLink = (evt: Event): HTMLAnchorElement | null => {
+      const link = (evt.target as HTMLElement | null)?.closest("a.internal-link");
+      return link instanceof HTMLAnchorElement && textEl.contains(link) ? link : null;
+    };
+    textEl.addEventListener("click", (evt) => {
+      const link = findInternalLink(evt);
+      if (!link) return;
+      evt.preventDefault();
+      // Keep the click from reaching card-level handlers (e.g. edit affordances).
+      evt.stopPropagation();
+      const target = link.getAttribute("data-href") ?? link.getAttribute("href");
+      if (target) void this.app.workspace.openLinkText(target, file.path, Keymap.isModEvent(evt));
+    });
+    textEl.addEventListener("mouseover", (evt) => {
+      const link = findInternalLink(evt);
+      if (!link) return;
+      this.app.workspace.trigger("hover-link", {
+        event: evt,
+        source: "tandem-comments",
+        hoverParent: this,
+        targetEl: link,
+        linktext: link.getAttribute("data-href") ?? link.getAttribute("href") ?? "",
+        sourcePath: file.path,
+      });
+    });
   }
 
   private addTimestamp(container: HTMLElement, timestamp: string): void {
