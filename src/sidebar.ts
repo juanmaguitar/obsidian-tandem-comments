@@ -1,4 +1,17 @@
-import { ItemView, Keymap, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, TFile, WorkspaceLeaf } from "obsidian";
+import {
+  type HoverParent,
+  type HoverPopover,
+  type PaneType,
+  ItemView,
+  Keymap,
+  MarkdownRenderer,
+  Menu,
+  Notice,
+  setIcon,
+  setTooltip,
+  TFile,
+  WorkspaceLeaf,
+} from "obsidian";
 import { resolveAuthorColor, type AuthorColorOverrides } from "./author-color";
 import { confirmAction } from "./confirm-action";
 import { formatComment, formatTs } from "./export";
@@ -74,7 +87,8 @@ function suggestionFailureMessage(reason: SuggestionFailureReason): string {
   }
 }
 
-export class CommentSidebar extends ItemView {
+export class CommentSidebar extends ItemView implements HoverParent {
+  hoverPopover: HoverPopover | null = null;
   private draft: Draft | null = null;
   private showResolved: boolean;
   private focusedId: string | null = null;
@@ -721,27 +735,38 @@ export class CommentSidebar extends ItemView {
    */
   private wireCommentLinks(textEl: HTMLElement, file: TFile): void {
     const findInternalLink = (evt: Event): HTMLAnchorElement | null => {
-      const link = (evt.target as HTMLElement | null)?.closest("a.internal-link");
-      return link instanceof HTMLAnchorElement && textEl.contains(link) ? link : null;
+      const link = (evt.target as Element | null)?.closest?.("a.internal-link");
+      return link && textEl.contains(link) ? (link as HTMLAnchorElement) : null;
     };
-    textEl.addEventListener("click", (evt) => {
+    const getLinkTarget = (link: HTMLAnchorElement): string | null =>
+      link.getAttribute("data-href") ?? link.getAttribute("href");
+    const openInternalLink = (evt: MouseEvent, newLeaf: PaneType | boolean): void => {
       const link = findInternalLink(evt);
       if (!link) return;
+      const target = getLinkTarget(link);
+      if (!target) return;
       evt.preventDefault();
       // Keep the click from reaching card-level handlers (e.g. edit affordances).
       evt.stopPropagation();
-      const target = link.getAttribute("data-href") ?? link.getAttribute("href");
-      if (target) void this.app.workspace.openLinkText(target, file.path, Keymap.isModEvent(evt));
+      void this.app.workspace.openLinkText(target, file.path, newLeaf);
+    };
+    textEl.addEventListener("click", (evt) => {
+      openInternalLink(evt, Keymap.isModEvent(evt));
+    });
+    textEl.addEventListener("auxclick", (evt) => {
+      if (evt.button === 1) openInternalLink(evt, true);
     });
     textEl.addEventListener("mouseover", (evt) => {
       const link = findInternalLink(evt);
       if (!link) return;
+      const target = getLinkTarget(link);
+      if (!target) return;
       this.app.workspace.trigger("hover-link", {
         event: evt,
-        source: "tandem-comments",
+        source: this.plugin.manifest.id,
         hoverParent: this,
         targetEl: link,
-        linktext: link.getAttribute("data-href") ?? link.getAttribute("href") ?? "",
+        linktext: target,
         sourcePath: file.path,
       });
     });

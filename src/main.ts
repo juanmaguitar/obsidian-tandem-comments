@@ -45,6 +45,10 @@ export default class CommentsPlugin extends Plugin {
     this.applyHighlightAppearance();
     this.applyReadingViewPreference();
 
+    this.registerHoverLinkSource(this.manifest.id, {
+      display: this.manifest.name,
+      defaultMod: false,
+    });
     this.registerView(VIEW_TYPE_COMMENTS, (leaf) => new CommentSidebar(leaf, this));
     this.registerEditorExtension(buildEditorExtension(this));
     registerReadingView(this);
